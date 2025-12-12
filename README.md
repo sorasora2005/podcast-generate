@@ -15,6 +15,7 @@
 
 - **Node.js**: v16以降を推奨。
 - **Docker**: Docker DesktopまたはDocker Engineがインストールされ、システムで実行されている必要があります。
+- **FFmpeg**: MP3形式で出力する場合、FFmpegがシステムにインストールされている必要があります（WAV形式のみの場合は不要）。
 - **システムリソース**: 
   - **メモリ**: VOICEVOXエンジンはデフォルトでworker5を使用し、処理中に最大**16GBのRAM**を消費する可能性があります。Dockerに十分なメモリが割り当てられていることを確認してください。
   - **CPU**: 音声合成はCPU上で動作する深層学習モデルを使用するため、計算集約的な処理です。処理時間はテキストの長さとシステムのパフォーマンスによって大きく異なります。
@@ -106,7 +107,7 @@ npx ts-node src/cli.ts docker stop
 
 **オプション:**
 - `-t, --text-file`: 入力テキストファイルのパス（必須）
-- `-o, --output-file`: 出力音声ファイルを保存するパス（必須）
+- `-o, --output-file`: 出力音声ファイルを保存するパス（必須）。拡張子が`.mp3`の場合はMP3形式、`.wav`の場合はWAV形式で出力されます。。拡張子が`.mp3`の場合はMP3形式、`.wav`の場合はWAV形式で出力されます。
 - `-c, --character-id`: キャラクター（話者）のID（必須）
 - `--pitch`: 声のピッチ（デフォルト: 0）
 - `--intonation-scale`: 声の抑揚スケール（デフォルト: 1）
@@ -118,7 +119,11 @@ npx ts-node src/cli.ts generate -t <text-file> -o <output-file> -c <character-id
 
 **オプション付きの例:**
 ```bash
+# WAV形式で出力
 npx ts-node src/cli.ts generate -t texts/example.txt -o audio/out.wav -c 1 --pitch 0 --speed 1.2
+
+# MP3形式で出力（ファイルサイズが小さくなります）
+npx ts-node src/cli.ts generate -t texts/example.txt -o audio/out.mp3 -c 1 --pitch 0 --speed 1.2
 ```
 
 ### `list-characters`

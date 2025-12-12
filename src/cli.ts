@@ -17,6 +17,7 @@ import {
 } from './dockerService';
 import { Writer, Reader } from 'wav';
 import { Readable } from 'stream';
+const ffmpeg = require('fluent-ffmpeg');
 
 function splitText(text: string, maxLength = 600): string[] {
   const chunks: string[] = [];
@@ -60,7 +61,7 @@ async function main() {
           .option('output-file', {
             alias: 'o',
             type: 'string',
-            description: 'Path to save the output audio file (e.g., output.wav).',
+            description: 'Path to save the output audio file (e.g., output.mp3 or output.wav). If .mp3 extension is used, the file will be converted to MP3 format.',
             demandOption: true,
           })
           .option('character-id', {
@@ -252,9 +253,40 @@ async function main() {
               });
             });
 
-            await fsPromises.rename(tempFilePath, outputFilePath);
+            // Check if output should be MP3 based on file extension
+            const outputExt = path.extname(outputFilePath).toLowerCase();
+            const isMp3Output = outputExt === '.mp3';
 
-            console.log(`Successfully saved audio to: ${outputFilePath}`);
+            if (isMp3Output) {
+              // Convert WAV to MP3
+              console.log('Converting WAV to MP3...');
+              const mp3FilePath = outputFilePath;
+              const wavFilePath = tempFilePath;
+
+              await new Promise<void>((resolve, reject) => {
+                ffmpeg(wavFilePath)
+                  .audioCodec('libmp3lame')
+                  .audioBitrate(128)
+                  .audioChannels(2)
+                  .audioFrequency(44100)
+                  .format('mp3')
+                  .on('end', () => {
+                    resolve();
+                  })
+                  .on('error', (err: Error) => {
+                    reject(new Error(`MP3 conversion failed: ${err.message}. Make sure FFmpeg is installed on your system.`));
+                  })
+                  .save(mp3FilePath);
+              });
+
+              // Delete temporary WAV file
+              await fsPromises.unlink(wavFilePath);
+              console.log(`Successfully saved audio to: ${mp3FilePath}`);
+            } else {
+              // Keep as WAV
+              await fsPromises.rename(tempFilePath, outputFilePath);
+              console.log(`Successfully saved audio to: ${outputFilePath}`);
+            }
           } finally {
             // Ensure cleanup even if there's an error
             audioBuffers.length = 0;
