@@ -20,12 +20,14 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
+    "cli-progress": "^3.12.0",
     "fluent-ffmpeg": "^2.1.2",
     "node-fetch": "^2.7.0",
     "wav": "^1.0.2",
     "yargs": "^17.7.2"
   },
   "devDependencies": {
+    "@types/cli-progress": "^3.11.6",
     "@types/fluent-ffmpeg": "^2.1.24",
     "@types/node": "^20.10.4",
     "@types/node-fetch": "^2.6.9",

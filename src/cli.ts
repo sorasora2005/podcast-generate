@@ -18,6 +18,7 @@ import {
 import { Writer, Reader } from 'wav';
 import { Readable } from 'stream';
 import { isDialogueScript, parseDialogueScript, DialogueLine } from './scriptParser';
+import cliProgress from 'cli-progress';
 const ffmpeg = require('fluent-ffmpeg');
 
 function splitText(text: string, maxLength = 600): string[] {
@@ -228,6 +229,22 @@ async function main() {
             const defaultIntonationScale = argv.intonationScale as number ?? 1;
             const defaultSpeed = argv.speed as number ?? 1;
 
+            // Calculate total number of chunks across all lines
+            const totalChunks = dialogueLines.reduce((sum, line) => {
+              return sum + splitText(line.text).length;
+            }, 0);
+
+            // Create progress bar
+            const progressBar = new cliProgress.SingleBar({
+              format: 'Progress |{bar}| {percentage}% | {value}/{total} chunks completed',
+              barCompleteChar: '\u2588',
+              barIncompleteChar: '\u2591',
+              hideCursor: true,
+            });
+            progressBar.start(totalChunks, 0);
+
+            let completedCount = 0;
+
             // Generate audio for each dialogue line
             const audioPromises = dialogueLines.map((line, index) => {
               const lineIndex = index + 1;
@@ -241,10 +258,6 @@ async function main() {
 
               // Generate audio for each chunk of this line
               const chunkPromises = textChunks.map((chunk, chunkIndex) => {
-                const chunkNum = chunkIndex + 1;
-                const totalChunks = textChunks.length;
-                console.log(`[Line ${lineIndex}/${dialogueLines.length}, Chunk ${chunkNum}/${totalChunks}] Character ${characterId}: "${chunk.substring(0, 30)}..."`);
-
                 return generateVoice({
                   text: chunk,
                   characterId,
@@ -252,7 +265,8 @@ async function main() {
                   intonationScale,
                   speed,
                 }).then((audioBuffer) => {
-                  console.log(`[Line ${lineIndex}/${dialogueLines.length}, Chunk ${chunkNum}/${totalChunks}] Completed`);
+                  completedCount++;
+                  progressBar.update(completedCount);
                   return { chunkIndex, audioBuffer };
                 });
               });
@@ -273,6 +287,7 @@ async function main() {
 
             // Wait for all lines to complete
             const results = await Promise.all(audioPromises);
+            progressBar.stop();
             audioBuffers = results
               .sort((a, b) => a.lineIndex - b.lineIndex)
               .map(result => result.audioBuffer);
@@ -290,10 +305,19 @@ async function main() {
             console.log('Generating audio chunks in parallel...');
             console.time('Voice generation time');
 
+            // Create progress bar
+            const progressBar = new cliProgress.SingleBar({
+              format: 'Progress |{bar}| {percentage}% | {value}/{total} chunks completed',
+              barCompleteChar: '\u2588',
+              barIncompleteChar: '\u2591',
+              hideCursor: true,
+            });
+            progressBar.start(textChunks.length, 0);
+
+            let completedCount = 0;
+
             // Generate all audio chunks in parallel
             const audioPromises = textChunks.map((chunk, index) => {
-              const chunkIndex = index + 1;
-              console.log(`[${chunkIndex}/${textChunks.length}] Queued: "${chunk.substring(0, 30)}..."`);
               return generateVoice({
                 text: chunk,
                 characterId: argv.characterId as number,
@@ -301,13 +325,15 @@ async function main() {
                 intonationScale: argv.intonationScale as number,
                 speed: argv.speed as number,
               }).then((audioBuffer) => {
-                console.log(`[${chunkIndex}/${textChunks.length}] Completed: "${chunk.substring(0, 30)}..."`);
+                completedCount++;
+                progressBar.update(completedCount);
                 return { index, audioBuffer };
               });
             });
 
             // Wait for all chunks to complete and sort by original index to maintain order
             const results = await Promise.all(audioPromises);
+            progressBar.stop();
             audioBuffers = results
               .sort((a, b) => a.index - b.index)
               .map(result => result.audioBuffer);
