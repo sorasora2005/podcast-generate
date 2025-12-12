@@ -17,6 +17,7 @@ import {
 } from './dockerService';
 import { Writer, Reader } from 'wav';
 import { Readable } from 'stream';
+import { isDialogueScript, parseDialogueScript, DialogueLine } from './scriptParser';
 const ffmpeg = require('fluent-ffmpeg');
 
 function splitText(text: string, maxLength = 600): string[] {
@@ -44,6 +45,104 @@ function splitText(text: string, maxLength = 600): string[] {
   return chunks;
 }
 
+/**
+ * Combine multiple WAV audio buffers into a single buffer
+ */
+async function combineAudioBuffers(audioBuffers: Buffer[]): Promise<Buffer> {
+  if (audioBuffers.length === 0) {
+    throw new Error('No audio buffers to combine');
+  }
+
+  if (audioBuffers.length === 1) {
+    return audioBuffers[0];
+  }
+
+  let format: any = null;
+  const audioDataChunks: Buffer[] = [];
+
+  for (let i = 0; i < audioBuffers.length; i++) {
+    const buffer = audioBuffers[i];
+    const readable = new Readable();
+    readable.push(buffer);
+    readable.push(null); // End of stream
+
+    const reader = new Reader();
+    const chunks: Buffer[] = [];
+
+    // Set up data handler
+    reader.on('data', (chunk: Buffer) => {
+      chunks.push(chunk);
+    });
+
+    // Capture format from first file
+    if (i === 0) {
+      reader.on('format', (fmt: any) => {
+        format = fmt;
+      });
+    }
+
+    // Pipe readable to reader
+    readable.pipe(reader);
+
+    // Wait for all data to be read
+    await new Promise<void>((resolve, reject) => {
+      const cleanup = () => {
+        // Clean up event listeners
+        reader.removeAllListeners();
+        readable.removeAllListeners();
+        // Unpipe to break the connection
+        readable.unpipe(reader);
+        // Destroy readable if method exists
+        if (typeof readable.destroy === 'function') {
+          readable.destroy();
+        }
+      };
+
+      reader.on('end', () => {
+        if (chunks.length > 0) {
+          audioDataChunks.push(Buffer.concat(chunks));
+        }
+        cleanup();
+        resolve();
+      });
+      reader.on('error', (err) => {
+        cleanup();
+        reject(err);
+      });
+    });
+  }
+
+  if (!format) {
+    throw new Error('Failed to read WAV format from first file');
+  }
+
+  // Combine all audio data
+  const combinedAudioData = Buffer.concat(audioDataChunks);
+
+  // Create a new WAV buffer with the combined data
+  const tempBuffer: Buffer[] = [];
+  const writer = new Writer(format);
+
+  writer.on('data', (chunk: Buffer) => {
+    tempBuffer.push(chunk);
+  });
+
+  writer.write(combinedAudioData);
+  writer.end();
+
+  // Wait for writer to finish
+  await new Promise<void>((resolve, reject) => {
+    writer.on('end', () => {
+      resolve();
+    });
+    writer.on('error', (err) => {
+      reject(err);
+    });
+  });
+
+  return Buffer.concat(tempBuffer);
+}
+
 async function main() {
   await yargs(hideBin(process.argv))
     .scriptName('podcast-generate')
@@ -67,8 +166,8 @@ async function main() {
           .option('character-id', {
             alias: 'c',
             type: 'number',
-            description: 'The ID of the character (speaker).',
-            demandOption: true,
+            description: 'The ID of the character (speaker). Required for single-speaker mode, optional for dialogue mode (used as default).',
+            demandOption: false,
           })
           .option('pitch', {
             type: 'number',
@@ -106,191 +205,164 @@ async function main() {
             throw new Error(`Text file is too long (${text.length} characters). Maximum allowed length is ${MAX_TEXT_LENGTH} characters.`);
           }
 
-          const textChunks = splitText(text);
+          // Detect if this is a dialogue script
+          const isDialogue = isDialogueScript(text);
 
-          console.log(`Splitted text into ${textChunks.length} chunks.`);
-          console.log('Generating audio chunks in parallel...');
-          console.time('Voice generation time');
+          let audioBuffers: Buffer[];
 
-          // Generate all audio chunks in parallel
-          const audioPromises = textChunks.map((chunk, index) => {
-            const chunkIndex = index + 1;
-            console.log(`[${chunkIndex}/${textChunks.length}] Queued: "${chunk.substring(0, 30)}..."`);
-            return generateVoice({
-              text: chunk,
-              characterId: argv.characterId as number,
-              pitch: argv.pitch as number,
-              intonationScale: argv.intonationScale as number,
-              speed: argv.speed as number,
-            }).then((audioBuffer) => {
-              console.log(`[${chunkIndex}/${textChunks.length}] Completed: "${chunk.substring(0, 30)}..."`);
-              return { index, audioBuffer };
+          if (isDialogue) {
+            // Dialogue mode: parse script and generate audio for each line
+            console.log('Detected dialogue script format. Processing in dialogue mode...');
+            const dialogueLines = parseDialogueScript(text);
+
+            if (dialogueLines.length === 0) {
+              throw new Error('No valid dialogue lines found in the script.');
+            }
+
+            console.log(`Found ${dialogueLines.length} dialogue lines.`);
+            console.log('Generating audio for each line...');
+            console.time('Voice generation time');
+
+            // Default parameters from CLI args (if provided)
+            const defaultPitch = argv.pitch as number ?? 0;
+            const defaultIntonationScale = argv.intonationScale as number ?? 1;
+            const defaultSpeed = argv.speed as number ?? 1;
+
+            // Generate audio for each dialogue line
+            const audioPromises = dialogueLines.map((line, index) => {
+              const lineIndex = index + 1;
+              const characterId = line.characterId;
+              const pitch = line.pitch ?? defaultPitch;
+              const intonationScale = line.intonationScale ?? defaultIntonationScale;
+              const speed = line.speed ?? defaultSpeed;
+
+              // Split long text into chunks if needed
+              const textChunks = splitText(line.text);
+
+              // Generate audio for each chunk of this line
+              const chunkPromises = textChunks.map((chunk, chunkIndex) => {
+                const chunkNum = chunkIndex + 1;
+                const totalChunks = textChunks.length;
+                console.log(`[Line ${lineIndex}/${dialogueLines.length}, Chunk ${chunkNum}/${totalChunks}] Character ${characterId}: "${chunk.substring(0, 30)}..."`);
+
+                return generateVoice({
+                  text: chunk,
+                  characterId,
+                  pitch,
+                  intonationScale,
+                  speed,
+                }).then((audioBuffer) => {
+                  console.log(`[Line ${lineIndex}/${dialogueLines.length}, Chunk ${chunkNum}/${totalChunks}] Completed`);
+                  return { chunkIndex, audioBuffer };
+                });
+              });
+
+              return Promise.all(chunkPromises).then(chunkResults => {
+                // Sort chunks by index and combine them for this line
+                const sortedChunks = chunkResults
+                  .sort((a, b) => a.chunkIndex - b.chunkIndex)
+                  .map(result => result.audioBuffer);
+
+                // Combine chunks for this line into a single buffer
+                return combineAudioBuffers(sortedChunks).then(combinedBuffer => ({
+                  lineIndex,
+                  audioBuffer: combinedBuffer,
+                }));
+              });
             });
-          });
 
-          // Wait for all chunks to complete and sort by original index to maintain order
-          const results = await Promise.all(audioPromises);
-          const audioBuffers = results
-            .sort((a, b) => a.index - b.index)
-            .map(result => result.audioBuffer);
+            // Wait for all lines to complete
+            const results = await Promise.all(audioPromises);
+            audioBuffers = results
+              .sort((a, b) => a.lineIndex - b.lineIndex)
+              .map(result => result.audioBuffer);
 
-          // Clear results array to help GC
-          results.length = 0;
+            console.timeEnd('Voice generation time');
+          } else {
+            // Single-speaker mode: use existing logic
+            if (argv.characterId === undefined) {
+              throw new Error('Character ID is required for single-speaker mode. Use -c or --character-id option.');
+            }
 
-          console.timeEnd('Voice generation time');
+            const textChunks = splitText(text);
+
+            console.log(`Splitted text into ${textChunks.length} chunks.`);
+            console.log('Generating audio chunks in parallel...');
+            console.time('Voice generation time');
+
+            // Generate all audio chunks in parallel
+            const audioPromises = textChunks.map((chunk, index) => {
+              const chunkIndex = index + 1;
+              console.log(`[${chunkIndex}/${textChunks.length}] Queued: "${chunk.substring(0, 30)}..."`);
+              return generateVoice({
+                text: chunk,
+                characterId: argv.characterId as number,
+                pitch: argv.pitch as number,
+                intonationScale: argv.intonationScale as number,
+                speed: argv.speed as number,
+              }).then((audioBuffer) => {
+                console.log(`[${chunkIndex}/${textChunks.length}] Completed: "${chunk.substring(0, 30)}..."`);
+                return { index, audioBuffer };
+              });
+            });
+
+            // Wait for all chunks to complete and sort by original index to maintain order
+            const results = await Promise.all(audioPromises);
+            audioBuffers = results
+              .sort((a, b) => a.index - b.index)
+              .map(result => result.audioBuffer);
+
+            // Clear results array to help GC
+            results.length = 0;
+
+            console.timeEnd('Voice generation time');
+          }
 
           console.log('Concatenating audio chunks...');
 
-          // Read format and audio data from all WAV files
-          let format: any = null;
-          const audioDataChunks: Buffer[] = [];
+          // Combine all audio buffers into a single buffer
+          const finalAudioBuffer = await combineAudioBuffers(audioBuffers);
 
-          try {
-            for (let i = 0; i < audioBuffers.length; i++) {
-              const buffer = audioBuffers[i];
-              const readable = new Readable();
-              readable.push(buffer);
-              readable.push(null); // End of stream
+          // Clear audioBuffers to help GC
+          audioBuffers.length = 0;
 
-              const reader = new Reader();
-              const chunks: Buffer[] = [];
+          // Write combined audio to file
+          const tempFilePath = path.join(path.dirname(outputFilePath), `temp_${Date.now()}.wav`);
+          await fsPromises.writeFile(tempFilePath, finalAudioBuffer);
 
-              // Set up data handler
-              reader.on('data', (chunk: Buffer) => {
-                chunks.push(chunk);
-              });
+          // Check if output should be MP3 based on file extension
+          const outputExt = path.extname(outputFilePath).toLowerCase();
+          const isMp3Output = outputExt === '.mp3';
 
-              // Capture format from first file
-              if (i === 0) {
-                reader.on('format', (fmt: any) => {
-                  format = fmt;
-                });
-              }
-
-              // Pipe readable to reader
-              readable.pipe(reader);
-
-              // Wait for all data to be read
-              await new Promise<void>((resolve, reject) => {
-                const cleanup = () => {
-                  // Clean up event listeners
-                  reader.removeAllListeners();
-                  readable.removeAllListeners();
-                  // Unpipe to break the connection
-                  readable.unpipe(reader);
-                  // Destroy readable if method exists
-                  if (typeof readable.destroy === 'function') {
-                    readable.destroy();
-                  }
-                };
-
-                reader.on('end', () => {
-                  if (chunks.length > 0) {
-                    audioDataChunks.push(Buffer.concat(chunks));
-                  }
-                  cleanup();
-                  resolve();
-                });
-                reader.on('error', (err) => {
-                  cleanup();
-                  reject(err);
-                });
-              });
-
-              // Clear the buffer reference to help GC
-              audioBuffers[i] = null as any;
-            }
-
-            if (!format) {
-              throw new Error('Failed to read WAV format from first file');
-            }
-
-            // Combine all audio data
-            let combinedAudioData = Buffer.concat(audioDataChunks);
-
-            // Clear audioDataChunks immediately after combining to free memory
-            audioDataChunks.length = 0;
-
-            // Write combined audio to file
-            const tempFilePath = path.join(path.dirname(outputFilePath), `temp_${Date.now()}.wav`);
-            const writeStream = fs.createWriteStream(tempFilePath);
-            const writer = new Writer(format);
-
-            writer.pipe(writeStream);
-            writer.write(combinedAudioData);
-            writer.end();
-
-            // Clear combinedAudioData reference after writing to help GC
-            combinedAudioData = null as any;
+          if (isMp3Output) {
+            // Convert WAV to MP3
+            console.log('Converting WAV to MP3...');
+            const mp3FilePath = outputFilePath;
+            const wavFilePath = tempFilePath;
 
             await new Promise<void>((resolve, reject) => {
-              const cleanup = () => {
-                try {
-                  // Clean up event listeners
-                  writer.removeAllListeners();
-                  writeStream.removeAllListeners();
-                  // Unpipe to break the connection
-                  writer.unpipe(writeStream);
-                  // Destroy streams if methods exist
-                  if (typeof writeStream.destroy === 'function') {
-                    writeStream.destroy();
-                  }
-                  if (typeof (writer as any).destroy === 'function') {
-                    (writer as any).destroy();
-                  }
-                } catch (e) {
-                  // Ignore cleanup errors
-                }
-              };
-
-              writeStream.on('finish', () => {
-                cleanup();
-                resolve();
-              });
-              writeStream.on('error', (err) => {
-                cleanup();
-                reject(err);
-              });
+              ffmpeg(wavFilePath)
+                .audioCodec('libmp3lame')
+                .audioBitrate(128)
+                .audioChannels(2)
+                .audioFrequency(44100)
+                .format('mp3')
+                .on('end', () => {
+                  resolve();
+                })
+                .on('error', (err: Error) => {
+                  reject(new Error(`MP3 conversion failed: ${err.message}. Make sure FFmpeg is installed on your system.`));
+                })
+                .save(mp3FilePath);
             });
 
-            // Check if output should be MP3 based on file extension
-            const outputExt = path.extname(outputFilePath).toLowerCase();
-            const isMp3Output = outputExt === '.mp3';
-
-            if (isMp3Output) {
-              // Convert WAV to MP3
-              console.log('Converting WAV to MP3...');
-              const mp3FilePath = outputFilePath;
-              const wavFilePath = tempFilePath;
-
-              await new Promise<void>((resolve, reject) => {
-                ffmpeg(wavFilePath)
-                  .audioCodec('libmp3lame')
-                  .audioBitrate(128)
-                  .audioChannels(2)
-                  .audioFrequency(44100)
-                  .format('mp3')
-                  .on('end', () => {
-                    resolve();
-                  })
-                  .on('error', (err: Error) => {
-                    reject(new Error(`MP3 conversion failed: ${err.message}. Make sure FFmpeg is installed on your system.`));
-                  })
-                  .save(mp3FilePath);
-              });
-
-              // Delete temporary WAV file
-              await fsPromises.unlink(wavFilePath);
-              console.log(`Successfully saved audio to: ${mp3FilePath}`);
-            } else {
-              // Keep as WAV
-              await fsPromises.rename(tempFilePath, outputFilePath);
-              console.log(`Successfully saved audio to: ${outputFilePath}`);
-            }
-          } finally {
-            // Ensure cleanup even if there's an error
-            audioBuffers.length = 0;
-            audioDataChunks.length = 0;
+            // Delete temporary WAV file
+            await fsPromises.unlink(wavFilePath);
+            console.log(`Successfully saved audio to: ${mp3FilePath}`);
+          } else {
+            // Keep as WAV
+            await fsPromises.rename(tempFilePath, outputFilePath);
+            console.log(`Successfully saved audio to: ${outputFilePath}`);
           }
 
         } catch (error) {
