@@ -237,6 +237,32 @@ async function main() {
             throw new Error(`Text file is too long (${text.length} characters). Maximum allowed length is ${MAX_TEXT_LENGTH} characters.`);
           }
 
+          // Validate output directory exists
+          const outputDir = path.dirname(outputFilePath);
+          try {
+            await fsPromises.access(outputDir, fs.constants.F_OK);
+          } catch {
+            throw new Error(`Output directory does not exist: ${outputDir}`);
+          }
+
+          // Validate BGM file if specified (before starting voice generation)
+          const bgmFile = argv.bgm as string | undefined;
+          const bgmVolume = (argv.bgmVolume as number) ?? 0.05;
+
+          if (bgmFile) {
+            // Resolve BGM file path (supports both relative and absolute paths)
+            const bgmFilePath = path.isAbsolute(bgmFile)
+              ? bgmFile
+              : path.resolve(bgmFile);
+
+            // Check if BGM file exists
+            try {
+              await fsPromises.access(bgmFilePath, fs.constants.F_OK);
+            } catch {
+              throw new Error(`BGM file not found: ${bgmFilePath}`);
+            }
+          }
+
           // Detect if this is a dialogue script
           const isDialogue = isDialogueScript(text);
 
@@ -387,25 +413,12 @@ async function main() {
           const tempFilePath = path.join(path.dirname(outputFilePath), `temp_${Date.now()}.wav`);
           await fsPromises.writeFile(tempFilePath, finalAudioBuffer);
 
-          // Check if BGM option is provided
-          const bgmFile = argv.bgm as string | undefined;
-          const bgmVolume = (argv.bgmVolume as number) ?? 0.05;
-
+          // BGM合成処理（バリデーションは既に完了している）
           if (bgmFile) {
-            // BGM合成処理
-            // Resolve BGM file path (supports both relative and absolute paths)
+            // Resolve BGM file path (already validated, but resolve again for consistency)
             const bgmFilePath = path.isAbsolute(bgmFile)
               ? bgmFile
               : path.resolve(bgmFile);
-
-            // Check if BGM file exists
-            try {
-              await fsPromises.access(bgmFilePath, fs.constants.F_OK);
-            } catch {
-              // Clean up temp file before throwing error
-              await fsPromises.unlink(tempFilePath).catch(() => { });
-              throw new Error(`BGM file not found: ${bgmFilePath}`);
-            }
 
             console.log(`Adding BGM: ${path.basename(bgmFilePath)} (volume: ${bgmVolume})...`);
 
