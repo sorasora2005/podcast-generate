@@ -425,7 +425,6 @@ async function main() {
             // Get voice and BGM duration
             const voiceDuration = await getAudioDuration(tempFilePath);
             const bgmDuration = await getAudioDuration(bgmFilePath);
-            const fadeStartTime = Math.max(0, voiceDuration - 3);
 
             // Check if output should be MP3 based on file extension
             const outputExt = path.extname(outputFilePath).toLowerCase();
@@ -465,8 +464,7 @@ async function main() {
                 command = command.complexFilter([
                   concatFilter,
                   `[bg_loop]volume=${bgmVolume}[bg]`,
-                  `[0:a][bg]amix=inputs=2:duration=first:dropout_transition=2[mix]`,
-                  `[mix]afade=t=out:st=${fadeStartTime}:d=3[out]`,
+                  `[0:a][bg]amix=inputs=2:duration=first:dropout_transition=2[out]`,
                 ])
                   .outputOptions(['-map', '[out]']);
               } else {
@@ -476,8 +474,7 @@ async function main() {
                   .input(bgmFilePath)
                   .complexFilter([
                     `[1:a]volume=${bgmVolume}[bg]`,
-                    `[0:a][bg]amix=inputs=2:duration=first:dropout_transition=2[mix]`,
-                    `[mix]afade=t=out:st=${fadeStartTime}:d=3[out]`,
+                    `[0:a][bg]amix=inputs=2:duration=first:dropout_transition=2[out]`,
                   ])
                   .outputOptions(['-map', '[out]']);
               }
