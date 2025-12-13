@@ -11,12 +11,13 @@
 - **並列処理**: 複数のテキストチャンクを並列で処理するため、生成が高速化されます。
 - **自動音声結合**: 生成されたすべての音声チャンクが自動的に1つのWAVファイルに結合されます。
 - **対話モード（Multi-Speaker Dialogue）**: 複数のキャラクターが掛け合いを行うスクリプト形式をサポート。各行ごとに異なる話者設定で音声を生成・結合します。
+- **BGM合成機能**: 生成された音声にBGMを合成できます。BGMは自動的にループされ、音声終了時にフェードアウトします。
 
 ## 前提条件
 
 - **Node.js**: v16以降を推奨。
 - **Docker**: Docker DesktopまたはDocker Engineがインストールされ、システムで実行されている必要があります。
-- **FFmpeg**: MP3形式で出力する場合、FFmpegがシステムにインストールされている必要があります（WAV形式のみの場合は不要）。
+- **FFmpeg**: MP3形式で出力する場合、またはBGM機能を使用する場合、FFmpegがシステムにインストールされている必要があります（WAV形式のみでBGMなしの場合は不要）。
 - **システムリソース**: 
   - **メモリ**: VOICEVOXエンジンはデフォルトでworker5を使用し、処理中に最大**16GBのRAM**を消費する可能性があります。Dockerに十分なメモリが割り当てられていることを確認してください。
   - **CPU**: 音声合成はCPU上で動作する深層学習モデルを使用するため、計算集約的な処理です。処理時間はテキストの長さとシステムのパフォーマンスによって大きく異なります。
@@ -29,6 +30,7 @@
 ```bash
 npm install
 ```
+
 
 ## 2. ワークフロー
 
@@ -116,6 +118,8 @@ npx ts-node src/cli.ts docker stop
 - `--pitch`: 声のピッチ（デフォルト: 0）。対話モードでは各行で個別に指定可能
 - `--intonation-scale`: 声の抑揚スケール（デフォルト: 1）。対話モードでは各行で個別に指定可能
 - `--speed`: 声の速度（デフォルト: 1）。対話モードでは各行で個別に指定可能
+- `-b, --bgm`: BGMファイルのパス（例: `bgm/jazz.mp3` または `/path/to/bgm.mp3`）。指定しない場合はBGMなしで生成されます。
+- `--bgm-volume`: BGMの音量倍率（0.0 〜 1.0、デフォルト: 0.05）。音声に対するBGMの音量比率を指定します。デフォルトは音声の5%の音量です。
 
 **単一話者モードの例:**
 ```bash
@@ -124,6 +128,12 @@ npx ts-node src/cli.ts generate -t texts/example.txt -o audio/out.wav -c 1 --pit
 
 # MP3形式で出力（ファイルサイズが小さくなります）
 npx ts-node src/cli.ts generate -t texts/example.txt -o audio/out.mp3 -c 1 --pitch 0 --speed 1.2
+
+# BGMを追加して出力（デフォルト音量: 0.05）
+npx ts-node src/cli.ts generate -t texts/example.txt -o audio/out.mp3 -c 1 -b bgm/jazz.mp3
+
+# BGMを追加して出力（音量を指定）
+npx ts-node src/cli.ts generate -t texts/example.txt -o audio/out.mp3 -c 1 -b bgm/lofi.mp3 --bgm-volume 0.1
 ```
 
 **対話モードの例:**
@@ -150,6 +160,14 @@ npx ts-node src/cli.ts generate -t texts/conversation.script -o audio/dialogue.w
 - サポートされるパラメータ: `pitch`, `intonationScale`, `speed`
 - 空行は無視されます
 - 形式に合わない行は警告を表示してスキップされます
+
+**BGM機能について:**
+- BGMファイルは任意の場所に配置でき、相対パスまたは絶対パスで指定できます（例: `bgm/jazz.mp3`、`/path/to/bgm.mp3`）
+- BGMファイルはMP3形式を推奨します
+- BGMが音声より短い場合、自動的にループされます
+- 音声終了の3秒前からBGMがフェードアウトします
+- BGMの音量は`--bgm-volume`オプションで調整できます（デフォルト: 0.05 = 音声の5%）
+- BGM機能を使用する場合、FFmpegが必要です
 
 ### `list-characters`
 エンジンから利用可能なすべてのキャラクターを一覧表示します。

@@ -47,6 +47,26 @@ function splitText(text: string, maxLength = 600): string[] {
 }
 
 /**
+ * Get the duration of an audio file in seconds using ffprobe
+ */
+async function getAudioDuration(filePath: string): Promise<number> {
+  return new Promise((resolve, reject) => {
+    ffmpeg.ffprobe(filePath, (err: Error | null, metadata: any) => {
+      if (err) {
+        reject(new Error(`Failed to get audio duration: ${err.message}`));
+        return;
+      }
+      const duration = metadata.format.duration;
+      if (typeof duration !== 'number' || isNaN(duration)) {
+        reject(new Error('Failed to get valid audio duration'));
+        return;
+      }
+      resolve(duration);
+    });
+  });
+}
+
+/**
  * Combine multiple WAV audio buffers into a single buffer
  */
 async function combineAudioBuffers(audioBuffers: Buffer[]): Promise<Buffer> {
@@ -184,6 +204,17 @@ async function main() {
             type: 'number',
             description: 'Speed of the voice.',
             default: 1,
+          })
+          .option('bgm', {
+            alias: 'b',
+            type: 'string',
+            description: 'Path to the BGM file (e.g., bgm/jazz.mp3 or /path/to/bgm.mp3). If not specified, no BGM will be added.',
+            demandOption: false,
+          })
+          .option('bgm-volume', {
+            type: 'number',
+            description: 'BGM volume ratio relative to voice (0.0 to 1.0). Default is 0.05 (5% of voice volume).',
+            default: 0.05,
           });
       },
       async (argv) => {
@@ -356,39 +387,158 @@ async function main() {
           const tempFilePath = path.join(path.dirname(outputFilePath), `temp_${Date.now()}.wav`);
           await fsPromises.writeFile(tempFilePath, finalAudioBuffer);
 
-          // Check if output should be MP3 based on file extension
-          const outputExt = path.extname(outputFilePath).toLowerCase();
-          const isMp3Output = outputExt === '.mp3';
+          // Check if BGM option is provided
+          const bgmFile = argv.bgm as string | undefined;
+          const bgmVolume = (argv.bgmVolume as number) ?? 0.05;
 
-          if (isMp3Output) {
-            // Convert WAV to MP3
-            console.log('Converting WAV to MP3...');
-            const mp3FilePath = outputFilePath;
-            const wavFilePath = tempFilePath;
+          if (bgmFile) {
+            // BGM合成処理
+            // Resolve BGM file path (supports both relative and absolute paths)
+            const bgmFilePath = path.isAbsolute(bgmFile)
+              ? bgmFile
+              : path.resolve(bgmFile);
 
+            // Check if BGM file exists
+            try {
+              await fsPromises.access(bgmFilePath, fs.constants.F_OK);
+            } catch {
+              // Clean up temp file before throwing error
+              await fsPromises.unlink(tempFilePath).catch(() => { });
+              throw new Error(`BGM file not found: ${bgmFilePath}`);
+            }
+
+            console.log(`Adding BGM: ${path.basename(bgmFilePath)} (volume: ${bgmVolume})...`);
+
+            // Get voice and BGM duration
+            const voiceDuration = await getAudioDuration(tempFilePath);
+            const bgmDuration = await getAudioDuration(bgmFilePath);
+            const fadeStartTime = Math.max(0, voiceDuration - 3);
+
+            // Check if output should be MP3 based on file extension
+            const outputExt = path.extname(outputFilePath).toLowerCase();
+            const isMp3Output = outputExt === '.mp3';
+
+            // Create temporary output file for BGM mixing
+            const tempOutputPath = path.join(
+              path.dirname(outputFilePath),
+              `temp_bgm_${Date.now()}.${isMp3Output ? 'mp3' : 'wav'}`
+            );
+
+            // Mix BGM with voice using FFmpeg
             await new Promise<void>((resolve, reject) => {
-              ffmpeg(wavFilePath)
-                .audioCodec('libmp3lame')
-                .audioBitrate(128)
-                .audioChannels(2)
-                .audioFrequency(44100)
-                .format('mp3')
+              let command: any;
+
+              // If BGM is shorter than voice, we need to loop it using concat filter
+              if (bgmDuration < voiceDuration) {
+                // Calculate how many times we need to loop BGM
+                const loopCount = Math.ceil(voiceDuration / bgmDuration);
+
+                // Create command with multiple inputs for BGM looping
+                command = ffmpeg()
+                  .input(tempFilePath);
+
+                // Add BGM file multiple times for looping
+                for (let i = 0; i < loopCount; i++) {
+                  command = command.input(bgmFilePath);
+                }
+
+                // Create concat filter inputs (BGM inputs start from index 1)
+                const concatInputs: string[] = [];
+                for (let i = 0; i < loopCount; i++) {
+                  concatInputs.push(`[${i + 1}:a]`);
+                }
+                const concatFilter = `${concatInputs.join('')}concat=n=${loopCount}:v=0:a=1[bg_loop]`;
+
+                command = command.complexFilter([
+                  concatFilter,
+                  `[bg_loop]volume=${bgmVolume}[bg]`,
+                  `[0:a][bg]amix=inputs=2:duration=first:dropout_transition=2[mix]`,
+                  `[mix]afade=t=out:st=${fadeStartTime}:d=3[out]`,
+                ])
+                  .outputOptions(['-map', '[out]']);
+              } else {
+                // BGM is longer than voice, just use it as is
+                command = ffmpeg()
+                  .input(tempFilePath)
+                  .input(bgmFilePath)
+                  .complexFilter([
+                    `[1:a]volume=${bgmVolume}[bg]`,
+                    `[0:a][bg]amix=inputs=2:duration=first:dropout_transition=2[mix]`,
+                    `[mix]afade=t=out:st=${fadeStartTime}:d=3[out]`,
+                  ])
+                  .outputOptions(['-map', '[out]']);
+              }
+
+              if (isMp3Output) {
+                command
+                  .audioCodec('libmp3lame')
+                  .audioBitrate(128)
+                  .audioChannels(2)
+                  .audioFrequency(44100)
+                  .format('mp3');
+              } else {
+                command
+                  .audioChannels(2)
+                  .audioFrequency(44100)
+                  .format('wav');
+              }
+
+              command
                 .on('end', () => {
                   resolve();
                 })
                 .on('error', (err: Error) => {
-                  reject(new Error(`MP3 conversion failed: ${err.message}. Make sure FFmpeg is installed on your system.`));
+                  reject(
+                    new Error(
+                      `BGM mixing failed: ${err.message}. Make sure FFmpeg is installed on your system.`
+                    )
+                  );
                 })
-                .save(mp3FilePath);
+                .save(tempOutputPath);
             });
 
+            // Move temp output to final output
+            await fsPromises.rename(tempOutputPath, outputFilePath);
+
             // Delete temporary WAV file
-            await fsPromises.unlink(wavFilePath);
-            console.log(`Successfully saved audio to: ${mp3FilePath}`);
+            await fsPromises.unlink(tempFilePath);
+            console.log(`Successfully saved audio with BGM to: ${outputFilePath}`);
           } else {
-            // Keep as WAV
-            await fsPromises.rename(tempFilePath, outputFilePath);
-            console.log(`Successfully saved audio to: ${outputFilePath}`);
+            // No BGM: use existing logic
+            // Check if output should be MP3 based on file extension
+            const outputExt = path.extname(outputFilePath).toLowerCase();
+            const isMp3Output = outputExt === '.mp3';
+
+            if (isMp3Output) {
+              // Convert WAV to MP3
+              console.log('Converting WAV to MP3...');
+              const mp3FilePath = outputFilePath;
+              const wavFilePath = tempFilePath;
+
+              await new Promise<void>((resolve, reject) => {
+                ffmpeg(wavFilePath)
+                  .audioCodec('libmp3lame')
+                  .audioBitrate(128)
+                  .audioChannels(2)
+                  .audioFrequency(44100)
+                  .format('mp3')
+                  .on('end', () => {
+                    resolve();
+                  })
+                  .on('error', (err: Error) => {
+                    reject(new Error(`MP3 conversion failed: ${err.message}. Make sure FFmpeg is installed on your system.`));
+                  })
+                  .save(mp3FilePath);
+              });
+
+              // Delete temporary WAV file
+              await fsPromises.unlink(wavFilePath);
+              console.log(`Successfully saved audio to: ${mp3FilePath}`);
+            } else {
+              // Keep as WAV
+              await fsPromises.rename(tempFilePath, outputFilePath);
+              console.log(`Successfully saved audio to: ${outputFilePath}`);
+            }
           }
 
         } catch (error) {
