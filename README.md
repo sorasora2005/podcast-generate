@@ -31,6 +31,15 @@
 npm install
 ```
 
+### プロンプトテンプレート（参考）
+
+`prompt/`ディレクトリには、ポッドキャスト台本作成のためのプロンプトテンプレートが含まれています。これらは参考として使用できます：
+
+- **`prompt/podcast-script-generation.md`**: 対話形式のポッドキャスト台本を生成するためのプロンプトテンプレート
+- **`prompt/deep-research-example.md`**: DeepResearchなどの調査ツールで使用する調査プロンプトの例
+
+これらのプロンプトをAIチャットボット（ChatGPT、Claude、DeepResearchなど）に使用することで、高品質なポッドキャスト台本を作成できます。
+
 
 ## 2. ワークフロー
 
@@ -210,6 +219,8 @@ npx ts-node src/cli.ts docker create
 1. **スクリプトの作成**
    - `texts/`ディレクトリにテキストファイルまたは対話スクリプトファイル（`.script`）を作成
    - トピックを選び、内容を整理してスクリプト化
+   - **ヒント**: `prompt/podcast-script-generation.md`のプロンプトテンプレートをAIチャットボットに使用すると、高品質な対話形式の台本を生成できます
+   - DeepResearchなどの調査ツールを使う場合は、`prompt/deep-research-example.md`のプロンプト例を参考にしてください
 
 2. **音声の生成**
    ```bash
