@@ -177,6 +177,45 @@ npx ts-node src/cli.ts generate -t texts/conversation.script -o audio/dialogue.w
 - BGMの音量は`--bgm-volume`オプションで調整できます（デフォルト: 0.05 = 音声の5%）
 - BGM機能を使用する場合、FFmpegが必要です
 
+### `batch-generate`
+指定した`texts/`配下のディレクトリ内のすべての`.script`および`.txt`ファイルを一括で音声ファイルに変換します。
+- エンジンコンテナが停止している場合、自動的に起動されます。
+- `audio/`ディレクトリが存在しない場合は自動作成されます。
+- `audio/{ディレクトリ名}/`ディレクトリが存在しない場合は自動作成されます。
+- 既に`.mp3`ファイルが存在する場合はスキップされ、未変換のファイルのみ処理されます。
+- エラーが発生しても処理を継続し、最後に結果をまとめて表示します。
+
+**オプション:**
+- `-d, --directory`: `texts/`配下のディレクトリ名（必須）。例: `1222`、`hoge`
+- `-c, --character-id`: キャラクター（話者）のID。単一話者モードでは必須、対話モードではオプション（デフォルト値として使用）
+- `--pitch`: 声のピッチ（デフォルト: 0）
+- `--intonation-scale`: 声の抑揚スケール（デフォルト: 1）
+- `--speed`: 声の速度（デフォルト: 1）
+- `-b, --bgm`: BGMファイルのパス（例: `bgm/jazz.mp3` または `/path/to/bgm.mp3`）。指定しない場合はBGMなしで生成されます。
+- `--bgm-volume`: BGMの音量倍率（0.0 〜 1.0、デフォルト: 0.05）
+
+**使用例:**
+```bash
+# 基本的な使用例（対話モード）
+npx ts-node src/cli.ts batch-generate -d 1222
+
+# 単一話者モードでキャラクターIDを指定
+npx ts-node src/cli.ts batch-generate -d 1222 -c 1
+
+# BGMを追加して一括変換
+npx ts-node src/cli.ts batch-generate -d 1222 -b bgm/jazz.mp3
+
+# パラメータを指定して一括変換
+npx ts-node src/cli.ts batch-generate -d 1222 -c 1 --pitch 0 --speed 1.2
+```
+
+**動作:**
+- `texts/{ディレクトリ名}/`内のすべての`.script`と`.txt`ファイルを検索します
+- 各ファイルに対して、`audio/{ディレクトリ名}/{ファイル名}.mp3`が存在するかチェックします
+- 存在しないファイルのみ変換処理を実行します
+- 処理中にエラーが発生したファイルがあっても、他のファイルの処理は継続されます
+- 処理完了後、スキップされたファイル数と処理されたファイル数を表示します
+
 ### `list-characters`
 エンジンから利用可能なすべてのキャラクターを一覧表示します。
 - `generate`と同じコンテナ起動/作成ロジックに従います。
@@ -224,8 +263,11 @@ npx ts-node src/cli.ts docker create
 
 2. **音声の生成**
    ```bash
-   # BGM付きで音声を生成
+   # 単一ファイルを生成（BGM付き）
    npx ts-node src/cli.ts generate -t texts/your-script.script -o audio/output.mp3 -b bgm/your-bgm.mp3
+   
+   # ディレクトリ内のすべてのファイルを一括生成
+   npx ts-node src/cli.ts batch-generate -d 1222 -b bgm/your-bgm.mp3
    ```
 
 3. **動画編集**
